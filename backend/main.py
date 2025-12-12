@@ -8,7 +8,7 @@ from google.oauth2 import id_token
 from google.auth.transport import requests as grequests
 from pydantic import BaseModel
 from datetime import datetime, timezone, timedelta
-from fastapi import FastAPI, UploadFile, File, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, UploadFile, File, WebSocket, WebSocketDisconnect, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi import Header
 
@@ -166,7 +166,7 @@ async def chat(ws: WebSocket):
         return
 
     try:
-        user = verify_token(token)
+        user_email = verify_access_token(token)
     except HTTPException:
         await ws.close(code=1008)
         return

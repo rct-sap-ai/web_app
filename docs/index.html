@@ -75,9 +75,28 @@
       const statusEl = document.getElementById("status");
       const sendBtn = document.getElementById("send");
 
-      const WS_URL = "wss://web-app-roiu.onrender.com/ws/chat";
-      const IS_LOCAL = location.hostname === "localhost" || location.hostname === "127.0.0.1";
-      const API_BASE = IS_LOCAL ? "http://127.0.0.1:8000" : "https://web-app-roiu.onrender.com/";
+      const IS_LOCAL =
+        location.hostname === "localhost" || location.hostname === "127.0.0.1";
+
+    const API_BASE = IS_LOCAL
+      ? "http://127.0.0.1:8000"
+      : "https://web-app-roiu.onrender.com/";
+
+      function wsBaseFromApiBase(apiBase) {
+        if (apiBase.startsWith("https://")) return "wss://" + apiBase.slice("https://".length);
+        if (apiBase.startsWith("http://")) return "ws://" + apiBase.slice("http://".length);
+        throw new Error("Unexpected API_BASE: " + apiBase);
+      }
+
+      function buildWsUrl(sessionToken) {
+        return (
+          wsBaseFromApiBase(API_BASE) +
+          "/ws/chat?token=" +
+          encodeURIComponent(sessionToken)
+        );
+      }
+
+
       const GOOGLE_CLIENT_ID = "893664286748-rnj6eojnomff3cs2e6imd5q7gnfh5ru5.apps.googleusercontent.com";
 
       let sessionToken = localStorage.getItem("sessionToken") || "";
@@ -177,13 +196,9 @@
           return;
         }
 
-        const wsUrl = "wss://web-app-roiu.onrender.com/ws/chat?token=" + encodeURIComponent(sessionToken);
+        const wsUrl = buildWsUrl(sessionToken);
         ws = new WebSocket(wsUrl);
 
-        statusEl.textContent = "Connecting...";
-
-
-        ws = new WebSocket(WS_URL);
         statusEl.textContent = "Connecting...";
 
         ws.onopen = () => statusEl.textContent = "Connected";
