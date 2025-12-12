@@ -1,0 +1,195 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Chat UI</title>
+    <style>
+      :root { color-scheme: light dark; }
+      body { margin: 0; font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial; }
+      .app { height: 100vh; display: flex; flex-direction: column; }
+      .topbar { padding: 12px 16px; border-bottom: 1px solid rgba(127,127,127,.3); }
+      .chat { flex: 1; overflow: auto; padding: 16px; display: flex; flex-direction: column; gap: 12px; }
+      .row { display: flex; }
+      .row.user { justify-content: flex-end; }
+      .row.assistant { justify-content: flex-start; }
+      .bubble {
+        max-width: 760px;
+        padding: 12px 14px;
+        border: 1px solid rgba(127,127,127,.35);
+        border-radius: 14px;
+        line-height: 1.35;
+        white-space: pre-wrap;
+        word-wrap: break-word;
+      }
+      .row.user .bubble { border-bottom-right-radius: 6px; }
+      .row.assistant .bubble { border-bottom-left-radius: 6px; }
+      .composerWrap { border-top: 1px solid rgba(127,127,127,.3); padding: 12px 16px; }
+      .composer { display: flex; gap: 10px; align-items: flex-end; }
+      textarea {
+        flex: 1;
+        resize: none;
+        min-height: 44px;
+        max-height: 180px;
+        padding: 10px 12px;
+        border-radius: 12px;
+        border: 1px solid rgba(127,127,127,.35);
+        outline: none;
+        font: inherit;
+      }
+      button {
+        height: 44px;
+        padding: 0 14px;
+        border-radius: 12px;
+        border: 1px solid rgba(127,127,127,.35);
+        background: transparent;
+        cursor: pointer;
+        font: inherit;
+      }
+      .meta { opacity: .7; font-size: 12px; padding: 0 16px 10px; }
+    </style>
+  </head>
+  <body>
+    <div class="app">
+      <div class="topbar"><b>Chat</b></div>
+
+      <div id="chat" class="chat" aria-live="polite"></div>
+
+      <div class="meta" id="status">Disconnected</div>
+
+      <div class="composerWrap">
+        <div class="composer">
+          <textarea id="input" placeholder="Message..." rows="1"></textarea>
+          <button id="send">Send</button>
+        </div>
+      </div>
+    </div>
+
+    <script>
+      const chatEl = document.getElementById("chat");
+      const inputEl = document.getElementById("input");
+      const statusEl = document.getElementById("status");
+      const sendBtn = document.getElementById("send");
+
+      const WS_URL = "ws://127.0.0.1:8000/ws/chat";
+      let ws;
+      let pendingAssistantBubble = null;
+      let lastAgentLabel = "";
+
+    let statusDotsTimer = null;
+
+    function startStatusThinking() {
+    if (statusDotsTimer) return;
+
+    let n = 0;
+    statusDotsTimer = setInterval(() => {
+        n = (n + 1) % 4;
+        statusEl.textContent = "Thinking" + ".".repeat(n);
+    }, 350);
+    }
+
+    function stopStatusThinking() {
+        if (!statusDotsTimer) return;
+        clearInterval(statusDotsTimer);
+        statusDotsTimer = null;
+
+        if (lastAgentLabel) {
+            statusEl.textContent = lastAgentLabel;
+         }
+    }
+  
+
+
+      function addBubble(role, text) {
+        const row = document.createElement("div");
+        row.className = "row " + role;
+
+        const bubble = document.createElement("div");
+        bubble.className = "bubble";
+        bubble.textContent = text;
+
+        row.appendChild(bubble);
+        chatEl.appendChild(row);
+        chatEl.scrollTop = chatEl.scrollHeight;
+        return bubble;
+      }
+
+      function connect() {
+        ws = new WebSocket(WS_URL);
+        statusEl.textContent = "Connecting...";
+
+        ws.onopen = () => statusEl.textContent = "Connected";
+        ws.onclose = () => {
+            stopStatusThinking();
+            statusEl.textContent = "Disconnected";
+        };
+        ws.onerror = () => statusEl.textContent = "Connection error";
+
+        ws.onmessage = (ev) => {
+          const msg = JSON.parse(ev.data);
+
+         if (msg.type === "assistant_delta") {
+            stopStatusThinking();
+            if (!pendingAssistantBubble) {
+                pendingAssistantBubble = addBubble("assistant", "");
+            }
+            pendingAssistantBubble.textContent += msg.delta;
+            chatEl.scrollTop = chatEl.scrollHeight;
+            return;
+        }
+
+        if (msg.type === "assistant_message") {
+            stopStatusThinking();
+            if (!pendingAssistantBubble) {
+                pendingAssistantBubble = addBubble("assistant", "");
+            }
+            pendingAssistantBubble.textContent = msg.text;
+            pendingAssistantBubble = null;
+            chatEl.scrollTop = chatEl.scrollHeight;
+            return;
+        }
+
+
+          if (msg.type === "status") {
+            lastAgentLabel = msg.message;
+            statusEl.textContent = msg.message;
+            return;
+          }
+
+          if (msg.type === "error") {
+            statusEl.textContent = "Error: " + msg.message;
+            return;
+          }
+        };
+      }
+
+      function send() {
+        const text = inputEl.value.trim();
+        if (!text || ws.readyState !== 1) return;
+
+        addBubble("user", text);
+        ws.send(JSON.stringify({ type: "user_message", text }));
+        startStatusThinking();
+        inputEl.value = "";
+        inputEl.style.height = "auto";
+        inputEl.focus();
+      }
+
+      sendBtn.onclick = send;
+
+      inputEl.addEventListener("keydown", (e) => {
+        if (e.key === "Enter" && !e.shiftKey) {
+          e.preventDefault();
+          send();
+        }
+      });
+
+      inputEl.addEventListener("input", () => {
+        inputEl.style.height = "auto";
+        inputEl.style.height = Math.min(inputEl.scrollHeight, 180) + "px";
+      });
+
+      connect();
+    </script>
+  </body>
+</html>
