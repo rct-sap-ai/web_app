@@ -6,3 +6,4 @@ websockets
 python-dotenv
 python-jose
 google-auth
+requests
