@@ -3,17 +3,52 @@ import uuid
 from pathlib import Path
 from typing import Any
 import asyncio
+from jose import jwt, JWTError
+from google.oauth2 import id_token
+from google.auth.transport import requests as grequests
 
 from fastapi import FastAPI, UploadFile, File, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi import Header
 
 from openai import OpenAI
 from dotenv import load_dotenv
 
 load_dotenv()
 
+GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID", "")
+JWT_SECRET = os.getenv("JWT_SECRET", "")
+JWT_ALG = "HS256"
+ACCESS_TOKEN_MINUTES = 60
+
+ALLOWED_EMAILS = set(
+    x.strip().lower()
+    for x in os.getenv("ALLOWED_EMAILS", "").split(",")
+    if x.strip()
+)
+
+
 UPLOAD_DIR = Path(__file__).parent / "uploads"
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+
+def create_access_token(email: str) -> str:
+    now = datetime.now(timezone.utc)
+    payload = {
+        "sub": email,
+        "iat": int(now.timestamp()),
+        "exp": int((now + timedelta(minutes=ACCESS_TOKEN_MINUTES)).timestamp()),
+    }
+    return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALG)
+
+def verify_access_token(token: str) -> str:
+    try:
+        payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALG])
+        email = payload.get("sub")
+        if not email:
+            raise ValueError("missing sub")
+        return str(email)
+    except (JWTError, ValueError):
+        raise HTTPException(status_code=401, detail="Invalid token")
 
 app = FastAPI()
 
@@ -93,7 +128,15 @@ def root():
 
 
 @app.post("/api/upload")
-async def upload(file: UploadFile = File(...)) -> dict[str, Any]:
+async def upload(
+    file: UploadFile = File(...),
+    authorization: str | None = Header(default=None),
+):
+    if not authorization or not authorization.lower().startswith("bearer "):
+        raise HTTPException(status_code=401, detail="Missing bearer token")
+    token = authorization.split(" ", 1)[1].strip()
+    user_email = verify_access_token(token)
+
     file_id = str(uuid.uuid4())
     safe_name = (file.filename or "upload.bin").replace("/", "_")
     dest = UPLOAD_DIR / f"{file_id}__{safe_name}"
@@ -116,8 +159,21 @@ async def upload(file: UploadFile = File(...)) -> dict[str, Any]:
 
 @app.websocket("/ws/chat")
 async def chat(ws: WebSocket):
+    token = ws.query_params.get("token")
+    if not token:
+        await ws.close(code=1008)
+        return
+
+    try:
+        user = verify_token(token)
+    except HTTPException:
+        await ws.close(code=1008)
+        return
+
+
     await ws.accept()
-    session_state: dict[str, Any] = {"file_preview": None}
+    session_state: dict[str, Any] = {"file_preview": None, "user": user_email}
+
 
     try:
         while True:
@@ -151,3 +207,35 @@ async def chat(ws: WebSocket):
 
     except WebSocketDisconnect:
         return
+    
+
+class GoogleAuthBody(BaseModel):
+    credential: str
+
+@app.post("/api/auth/google")
+def auth_google(body: GoogleAuthBody):
+    if not GOOGLE_CLIENT_ID:
+        raise HTTPException(status_code=500, detail="GOOGLE_CLIENT_ID not set")
+    if not JWT_SECRET:
+        raise HTTPException(status_code=500, detail="JWT_SECRET not set")
+
+    try:
+        info = id_token.verify_oauth2_token(
+            body.credential,
+            grequests.Request(),
+            GOOGLE_CLIENT_ID,
+        )
+    except Exception:
+        raise HTTPException(status_code=401, detail="Invalid Google token")
+
+    email = (info.get("email") or "").lower()
+    email_verified = info.get("email_verified")
+
+    if not email or not email_verified:
+        raise HTTPException(status_code=401, detail="Email not verified")
+
+    if ALLOWED_EMAILS and email not in ALLOWED_EMAILS:
+        raise HTTPException(status_code=403, detail="Not allowed")
+
+    token = create_access_token(email)
+    return {"access_token": token, "token_type": "bearer"}

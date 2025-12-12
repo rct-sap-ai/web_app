@@ -4,3 +4,5 @@ python-multipart
 openai
 websockets
 python-dotenv
+python-jose
+google-auth
