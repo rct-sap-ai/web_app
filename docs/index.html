@@ -11,7 +11,6 @@
       body { margin: 0; font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial; }
       .app { height: 100vh; display: flex; flex-direction: column; }
       .topbar { padding: 12px 16px; border-bottom: 1px solid rgba(127,127,127,.3); }
-      <div id="googleBtn" style="padding: 12px 16px;"></div>
       .chat { flex: 1; overflow: auto; padding: 16px; display: flex; flex-direction: column; gap: 12px; }
       .row { display: flex; }
       .row.user { justify-content: flex-end; }
@@ -55,7 +54,7 @@
   <body>
     <div class="app">
       <div class="topbar"><b>Chat</b></div>
-
+      <div id="googleBtn" style="padding: 12px 16px;"></div>
       <div id="chat" class="chat" aria-live="polite"></div>
 
       <div class="meta" id="status">Disconnected</div>
