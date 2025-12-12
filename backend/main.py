@@ -216,8 +216,10 @@ class GoogleAuthBody(BaseModel):
 @app.post("/api/auth/google")
 def auth_google(body: GoogleAuthBody):
     if not GOOGLE_CLIENT_ID:
+        print("Missing GOOGLE_CLIENT_ID")
         raise HTTPException(status_code=500, detail="GOOGLE_CLIENT_ID not set")
     if not JWT_SECRET:
+        print("Missing JWT_SECRET")
         raise HTTPException(status_code=500, detail="JWT_SECRET not set")
 
     try:
@@ -226,16 +228,19 @@ def auth_google(body: GoogleAuthBody):
             grequests.Request(),
             GOOGLE_CLIENT_ID,
         )
-    except Exception:
+    except Exception as e:
+        print("Google token verify failed:", repr(e))
         raise HTTPException(status_code=401, detail="Invalid Google token")
 
     email = (info.get("email") or "").lower()
     email_verified = info.get("email_verified")
+    print("Google login:", email, "verified:", email_verified)
 
     if not email or not email_verified:
         raise HTTPException(status_code=401, detail="Email not verified")
 
     if ALLOWED_EMAILS and email not in ALLOWED_EMAILS:
+        print("Email not allowed:", email, "allowed:", ALLOWED_EMAILS)
         raise HTTPException(status_code=403, detail="Not allowed")
 
     token = create_access_token(email)

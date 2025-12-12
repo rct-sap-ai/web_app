@@ -76,7 +76,8 @@
       const sendBtn = document.getElementById("send");
 
       const WS_URL = "wss://web-app-roiu.onrender.com/ws/chat";
-      const API_BASE = "https://web-app-roiu.onrender.com/";
+      const IS_LOCAL = location.hostname === "localhost" || location.hostname === "127.0.0.1";
+      const API_BASE = IS_LOCAL ? "http://127.0.0.1:5500" : "https://web-app-roiu.onrender.com/";
       const GOOGLE_CLIENT_ID = "893664286748-rnj6eojnomff3cs2e6imd5q7gnfh5ru5.apps.googleusercontent.com";
 
       let sessionToken = localStorage.getItem("sessionToken") || "";
@@ -131,15 +132,19 @@
           body: JSON.stringify({ credential }),
         });
 
+        const text = await r.text(); // read body once
+
         if (!r.ok) {
-          const t = await r.text();
-          throw new Error(t || "Auth failed");
+          console.log("Auth status", r.status);
+          console.log("Auth body", text);
+          throw new Error(text || ("Auth failed: " + r.status));
         }
 
-        const data = await r.json();
+        const data = JSON.parse(text);
         sessionToken = data.access_token;
         localStorage.setItem("sessionToken", sessionToken);
     }
+
 
     window.onload = async () => {
       google.accounts.id.initialize({
