@@ -6,6 +6,7 @@ import asyncio
 from jose import jwt, JWTError
 from google.oauth2 import id_token
 from google.auth.transport import requests as grequests
+from pydantic import BaseModel
 
 from fastapi import FastAPI, UploadFile, File, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
