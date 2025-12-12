@@ -1,0 +1,353 @@
+<!doctype html>
+
+<html lang="en">
+  <head>
+    <script src="https://accounts.google.com/gsi/client" async defer></script>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Chat UI</title>
+    <style>
+      :root { color-scheme: light dark; }
+      body { margin: 0; font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial; }
+      .app { height: 100vh; display: flex; flex-direction: column; }
+      .topbar { padding: 12px 16px; border-bottom: 1px solid rgba(127,127,127,.3); }
+      .chat { flex: 1; overflow: auto; padding: 16px; display: flex; flex-direction: column; gap: 12px; }
+      .row { display: flex; }
+      .row.user { justify-content: flex-end; }
+      .row.assistant { justify-content: flex-start; }
+      .bubble {
+        max-width: 760px;
+        padding: 12px 14px;
+        border: 1px solid rgba(127,127,127,.35);
+        border-radius: 14px;
+        line-height: 1.35;
+        white-space: pre-wrap;
+        word-wrap: break-word;
+      }
+      .row.user .bubble { border-bottom-right-radius: 6px; }
+      .row.assistant .bubble { border-bottom-left-radius: 6px; }
+      .composerWrap { border-top: 1px solid rgba(127,127,127,.3); padding: 12px 16px; }
+      .composer { display: flex; gap: 10px; align-items: flex-end; }
+      textarea {
+        flex: 1;
+        resize: none;
+        min-height: 44px;
+        max-height: 180px;
+        padding: 10px 12px;
+        border-radius: 12px;
+        border: 1px solid rgba(127,127,127,.35);
+        outline: none;
+        font: inherit;
+      }
+      button {
+        height: 44px;
+        padding: 0 14px;
+        border-radius: 12px;
+        border: 1px solid rgba(127,127,127,.35);
+        background: transparent;
+        cursor: pointer;
+        font: inherit;
+      }
+      .meta { opacity: .7; font-size: 12px; padding: 0 16px 10px; }
+    </style>
+  </head>
+  <body>
+    <div class="app">
+    <div class="topbar"><b>Chat</b></div>
+    <div id="authBar" style="padding: 12px 16px; display:flex; gap:12px; align-items:center;">
+    <div id="googleWrap">
+    <div id="googleBtn"></div>
+    </div>
+      <div id="signedInAs" style="opacity:.8;"></div>
+      <button id="switchBtn" style="display:none;">Switch account</button>
+      <button id="logoutBtn" style="display:none;">Log out</button>
+    </div>
+      <div id="chat" class="chat" aria-live="polite"></div>
+      <div class="meta" id="status">Disconnected</div>
+      <div class="composerWrap">
+        <div class="composer">
+          <textarea id="input" placeholder="Message..." rows="1"></textarea>
+          <button id="send">Send</button>
+        </div>
+      </div>
+    </div>
+
+    <script>
+     
+
+      const chatEl = document.getElementById("chat");
+      const inputEl = document.getElementById("input");
+      const statusEl = document.getElementById("status");
+      const sendBtn = document.getElementById("send");
+
+
+
+
+      const IS_LOCAL =
+        location.hostname === "localhost" || location.hostname === "127.0.0.1";
+
+    const API_BASE = IS_LOCAL
+      ? "http://127.0.0.1:8000"
+      : "https://web-app-roiu.onrender.com";
+
+      function wsBaseFromApiBase(apiBase) {
+        if (apiBase.startsWith("https://")) return "wss://" + apiBase.slice("https://".length);
+        if (apiBase.startsWith("http://")) return "ws://" + apiBase.slice("http://".length);
+        throw new Error("Unexpected API_BASE: " + apiBase);
+      }
+
+      function buildWsUrl(sessionToken) {
+        return (
+          wsBaseFromApiBase(API_BASE) +
+          "/ws/chat?token=" +
+          encodeURIComponent(sessionToken)
+        );
+      }
+
+
+      const GOOGLE_CLIENT_ID = "893664286748-rnj6eojnomff3cs2e6imd5q7gnfh5ru5.apps.googleusercontent.com";
+
+      let sessionToken = localStorage.getItem("sessionToken") || "";
+
+      function decodeJwtPayload(token) {
+        try {
+          const payload = token.split(".")[1];
+          const json = atob(payload.replace(/-/g, "+").replace(/_/g, "/"));
+          return JSON.parse(json);
+        } catch {
+          return null;
+        }
+      }
+
+      function updateAuthUi() {
+          if (!sessionToken) {
+            signedInAsEl.textContent = "";
+            googleWrap.style.display = "block";
+            switchBtn.style.display = "none";
+            logoutBtn.style.display = "none";
+            return;
+          }
+
+          const payload = decodeJwtPayload(sessionToken);
+          const who = payload && payload.sub ? payload.sub : "Signed in";
+          signedInAsEl.textContent = "Signed in as " + who;
+
+          googleWrap.style.display = "none";
+          switchBtn.style.display = "inline-block";
+          logoutBtn.style.display = "inline-block";
+    }
+
+      async function switchAccount() {
+          logout(); // clears sessionToken and closes ws
+
+          if (window.google && google.accounts && google.accounts.id) {
+            google.accounts.id.disableAutoSelect();
+            google.accounts.id.prompt(); // show chooser
+          }
+      }
+
+
+      function logout() {
+        sessionToken = "";
+        localStorage.removeItem("sessionToken");
+
+        if (ws) {
+          try { ws.close(); } catch {}
+        }
+
+        updateAuthUi();
+
+        // Tell Google to forget the previous selection so user can switch accounts
+        if (window.google && google.accounts && google.accounts.id) {
+          google.accounts.id.disableAutoSelect();
+        }
+
+        statusEl.textContent = "Signed out";
+      }
+
+
+
+
+      const googleWrap = document.getElementById("googleWrap");
+      const switchBtn = document.getElementById("switchBtn");
+      const logoutBtn = document.getElementById("logoutBtn");
+      const signedInAsEl = document.getElementById("signedInAs");
+
+      switchBtn.onclick = switchAccount;
+      logoutBtn.onclick = logout;
+
+      let ws;
+      let pendingAssistantBubble = null;
+      let lastAgentLabel = "";
+
+    let statusDotsTimer = null;
+
+    function startStatusThinking() {
+    if (statusDotsTimer) return;
+
+    let n = 0;
+    statusDotsTimer = setInterval(() => {
+        n = (n + 1) % 4;
+        statusEl.textContent = "Thinking" + ".".repeat(n);
+    }, 350);
+    }
+
+    function stopStatusThinking() {
+        if (!statusDotsTimer) return;
+        clearInterval(statusDotsTimer);
+        statusDotsTimer = null;
+
+        if (lastAgentLabel) {
+            statusEl.textContent = lastAgentLabel;
+         }
+    }
+  
+
+
+      function addBubble(role, text) {
+        const row = document.createElement("div");
+        row.className = "row " + role;
+
+        const bubble = document.createElement("div");
+        bubble.className = "bubble";
+        bubble.textContent = text;
+
+        row.appendChild(bubble);
+        chatEl.appendChild(row);
+        chatEl.scrollTop = chatEl.scrollHeight;
+        return bubble;
+      }
+
+      async function exchangeGoogleCredential(credential) {
+        const r = await fetch(API_BASE + "/api/auth/google", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ credential }),
+        });
+
+        const text = await r.text(); // read body once
+
+        if (!r.ok) {
+          console.log("Auth status", r.status);
+          console.log("Auth body", text);
+          throw new Error(text || ("Auth failed: " + r.status));
+        }
+
+        const data = JSON.parse(text);
+        sessionToken = data.access_token;
+        localStorage.setItem("sessionToken", sessionToken);
+    }
+
+
+    window.onload = async () => {
+      google.accounts.id.initialize({
+        client_id: GOOGLE_CLIENT_ID,
+        callback: async (resp) => {
+          try {
+            await exchangeGoogleCredential(resp.credential);
+            updateAuthUi();
+            connect();
+          } catch (e) {
+            alert("Login failed");
+          }
+        },
+      });
+
+      google.accounts.id.renderButton(
+        document.getElementById("googleBtn"),
+        { theme: "outline", size: "large" }
+      );
+      updateAuthUi();
+
+      if (sessionToken) {
+        connect();
+      }
+};
+
+
+
+      function connect() {
+       if (!sessionToken) {
+          statusEl.textContent = "Please sign in";
+          return;
+        }
+
+        const wsUrl = buildWsUrl(sessionToken);
+        ws = new WebSocket(wsUrl);
+
+        statusEl.textContent = "Connecting...";
+
+        ws.onopen = () => statusEl.textContent = "Connected";
+        ws.onclose = () => {
+            stopStatusThinking();
+            statusEl.textContent = "Disconnected";
+        };
+        ws.onerror = () => statusEl.textContent = "Connection error";
+
+        ws.onmessage = (ev) => {
+          const msg = JSON.parse(ev.data);
+
+         if (msg.type === "assistant_delta") {
+            stopStatusThinking();
+            if (!pendingAssistantBubble) {
+                pendingAssistantBubble = addBubble("assistant", "");
+            }
+            pendingAssistantBubble.textContent += msg.delta;
+            chatEl.scrollTop = chatEl.scrollHeight;
+            return;
+        }
+
+        if (msg.type === "assistant_message") {
+            stopStatusThinking();
+            if (!pendingAssistantBubble) {
+                pendingAssistantBubble = addBubble("assistant", "");
+            }
+            pendingAssistantBubble.textContent = msg.text;
+            pendingAssistantBubble = null;
+            chatEl.scrollTop = chatEl.scrollHeight;
+            return;
+        }
+
+
+          if (msg.type === "status") {
+            lastAgentLabel = msg.message;
+            statusEl.textContent = msg.message;
+            return;
+          }
+
+          if (msg.type === "error") {
+            statusEl.textContent = "Error: " + msg.message;
+            return;
+          }
+        };
+      }
+
+      function send() {
+        const text = inputEl.value.trim();
+        if (!text || ws.readyState !== 1) return;
+
+        addBubble("user", text);
+        ws.send(JSON.stringify({ type: "user_message", text }));
+        startStatusThinking();
+        inputEl.value = "";
+        inputEl.style.height = "auto";
+        inputEl.focus();
+      }
+
+      sendBtn.onclick = send;
+
+      inputEl.addEventListener("keydown", (e) => {
+        if (e.key === "Enter" && !e.shiftKey) {
+          e.preventDefault();
+          send();
+        }
+      });
+
+      inputEl.addEventListener("input", () => {
+        inputEl.style.height = "auto";
+        inputEl.style.height = Math.min(inputEl.scrollHeight, 180) + "px";
+      });
+
+    </script>
+  </body>
+</html>
