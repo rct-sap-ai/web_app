@@ -1,8 +1,8 @@
 <!doctype html>
-<script src="https://accounts.google.com/gsi/client" async defer></script>
 
 <html lang="en">
   <head>
+    <script src="https://accounts.google.com/gsi/client" async defer></script>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Chat UI</title>
@@ -53,12 +53,17 @@
   </head>
   <body>
     <div class="app">
-      <div class="topbar"><b>Chat</b></div>
-      <div id="googleBtn" style="padding: 12px 16px;"></div>
+    <div class="topbar"><b>Chat</b></div>
+    <div id="authBar" style="padding: 12px 16px; display:flex; gap:12px; align-items:center;">
+    <div id="googleWrap">
+    <div id="googleBtn"></div>
+    </div>
+      <div id="signedInAs" style="opacity:.8;"></div>
+      <button id="switchBtn" style="display:none;">Switch account</button>
+      <button id="logoutBtn" style="display:none;">Log out</button>
+    </div>
       <div id="chat" class="chat" aria-live="polite"></div>
-
       <div class="meta" id="status">Disconnected</div>
-
       <div class="composerWrap">
         <div class="composer">
           <textarea id="input" placeholder="Message..." rows="1"></textarea>
@@ -75,12 +80,15 @@
       const statusEl = document.getElementById("status");
       const sendBtn = document.getElementById("send");
 
+
+
+
       const IS_LOCAL =
         location.hostname === "localhost" || location.hostname === "127.0.0.1";
 
     const API_BASE = IS_LOCAL
       ? "http://127.0.0.1:8000"
-      : "https://web-app-roiu.onrender.com/";
+      : "https://web-app-roiu.onrender.com";
 
       function wsBaseFromApiBase(apiBase) {
         if (apiBase.startsWith("https://")) return "wss://" + apiBase.slice("https://".length);
@@ -101,6 +109,72 @@
 
       let sessionToken = localStorage.getItem("sessionToken") || "";
 
+      function decodeJwtPayload(token) {
+        try {
+          const payload = token.split(".")[1];
+          const json = atob(payload.replace(/-/g, "+").replace(/_/g, "/"));
+          return JSON.parse(json);
+        } catch {
+          return null;
+        }
+      }
+
+      function updateAuthUi() {
+          if (!sessionToken) {
+            signedInAsEl.textContent = "";
+            googleWrap.style.display = "block";
+            switchBtn.style.display = "none";
+            logoutBtn.style.display = "none";
+            return;
+          }
+
+          const payload = decodeJwtPayload(sessionToken);
+          const who = payload && payload.sub ? payload.sub : "Signed in";
+          signedInAsEl.textContent = "Signed in as " + who;
+
+          googleWrap.style.display = "none";
+          switchBtn.style.display = "inline-block";
+          logoutBtn.style.display = "inline-block";
+    }
+
+      async function switchAccount() {
+          logout(); // clears sessionToken and closes ws
+
+          if (window.google && google.accounts && google.accounts.id) {
+            google.accounts.id.disableAutoSelect();
+            google.accounts.id.prompt(); // show chooser
+          }
+      }
+
+
+      function logout() {
+        sessionToken = "";
+        localStorage.removeItem("sessionToken");
+
+        if (ws) {
+          try { ws.close(); } catch {}
+        }
+
+        updateAuthUi();
+
+        // Tell Google to forget the previous selection so user can switch accounts
+        if (window.google && google.accounts && google.accounts.id) {
+          google.accounts.id.disableAutoSelect();
+        }
+
+        statusEl.textContent = "Signed out";
+      }
+
+
+
+
+      const googleWrap = document.getElementById("googleWrap");
+      const switchBtn = document.getElementById("switchBtn");
+      const logoutBtn = document.getElementById("logoutBtn");
+      const signedInAsEl = document.getElementById("signedInAs");
+
+      switchBtn.onclick = switchAccount;
+      logoutBtn.onclick = logout;
 
       let ws;
       let pendingAssistantBubble = null;
@@ -171,6 +245,7 @@
         callback: async (resp) => {
           try {
             await exchangeGoogleCredential(resp.credential);
+            updateAuthUi();
             connect();
           } catch (e) {
             alert("Login failed");
@@ -182,6 +257,7 @@
         document.getElementById("googleBtn"),
         { theme: "outline", size: "large" }
       );
+      updateAuthUi();
 
       if (sessionToken) {
         connect();
@@ -272,7 +348,6 @@
         inputEl.style.height = Math.min(inputEl.scrollHeight, 180) + "px";
       });
 
-      connect();
     </script>
   </body>
 </html>
