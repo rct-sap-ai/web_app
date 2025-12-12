@@ -71,7 +71,9 @@
       const statusEl = document.getElementById("status");
       const sendBtn = document.getElementById("send");
 
-      const WS_URL = "ws://127.0.0.1:8000/ws/chat";
+      const WS_URL = "wss://web-app-roiu.onrender.com/ws/chat";
+      const API_BASE = "https://web-app-roiu.onrender.com/";
+
       let ws;
       let pendingAssistantBubble = null;
       let lastAgentLabel = "";
