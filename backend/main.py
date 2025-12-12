@@ -87,7 +87,9 @@ async def call_model_streaming(
 
     await ws.send_json({"type": "assistant_message", "text": full})
 
-
+@app.get("/")
+def root():
+    return {"ok": True, "message": "Backend is running"}
 
 
 @app.post("/api/upload")
