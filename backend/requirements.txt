@@ -8,3 +8,6 @@ python-jose
 google-auth
 requests
 pydantic
+pypdf
+python-docx
+openai-agents

@@ -6,9 +6,9 @@ const IS_LOCAL = location.hostname === "localhost" || location.hostname === "127
 
 export const API_BASE = IS_LOCAL
   ? "http://127.0.0.1:8000"
-  : "https://YOUR_RENDER_SERVICE.onrender.com";
+  : "https://web-app-roiu.onrender.com";
 
-export const GOOGLE_CLIENT_ID = "YOUR_GOOGLE_CLIENT_ID.apps.googleusercontent.com";
+export const GOOGLE_CLIENT_ID = "893664286748-rnj6eojnomff3cs2e6imd5q7gnfh5ru5.apps.googleusercontent.com";
 
 const pageLanding = document.getElementById("pageLanding");
 const pageChat = document.getElementById("pageChat");

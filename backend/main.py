@@ -9,10 +9,19 @@ from google.auth.transport import requests as grequests
 from pydantic import BaseModel
 from datetime import datetime, timezone, timedelta
 from fastapi import FastAPI, UploadFile, File, WebSocket, WebSocketDisconnect, HTTPException
+from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi import Header
+from pathlib import Path
+from docx import Document
+from pypdf import PdfReader
+from my_agents.paper_agents import START_AGENT
+
+from agents import Agent, Runner
+from agents.memory import OpenAIConversationsSession
 
 from openai import OpenAI
+from openai.types.responses import ResponseTextDeltaEvent
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -75,139 +84,166 @@ def route_agent(user_text: str) -> str:
         return "extractor"
     return "general"
 
-async def call_model_streaming(
-    ws,
-    agent_name: str,
+
+
+
+async def call_model_streaming_agents_sdk(
+    ws: WebSocket,
+    agent: Agent,
     user_text: str,
     file_context: str | None,
+    session: OpenAIConversationsSession,
+    session_state: dict[str, Any],
 ):
-    system = {
-        "general": "You are a helpful assistant.",
-        "summarizer": "You summarize clearly and briefly.",
-        "extractor": "You extract key structured facts and list them.",
-    }[agent_name]
-
     context_block = ""
     if file_context:
         context_block = f"\n\nUser uploaded file content:\n{file_context}\n"
 
-    q: asyncio.Queue[str | None] = asyncio.Queue()
-
-    def producer():
-        try:
-            stream = client.responses.create(
-                model="gpt-5-mini",
-                input=[
-                    {"role": "system", "content": system},
-                    {"role": "user", "content": user_text + context_block},
-                ],
-                stream=True,
-            )
-            for event in stream:
-                if getattr(event, "type", None) == "response.output_text.delta":
-                    delta = event.delta
-                    if delta:
-                        q.put_nowait(delta)
-        finally:
-            q.put_nowait(None)
-
-    asyncio.create_task(asyncio.to_thread(producer))
+    result = Runner.run_streamed(
+        agent,
+        input=user_text + context_block,
+        session=session,
+    )
 
     full = ""
-    while True:
-        chunk = await q.get()
-        if chunk is None:
-            break
-        full += chunk
-        await ws.send_json({"type": "assistant_delta", "delta": chunk})
+    async for event in result.stream_events():
+        if event.type == "agent_updated_stream_event":
+            # update who is currently in charge
+            session_state["agent"]  = event.new_agent
+            await ws.send_json({"type": "status", "message": f"Agent: {event.new_agent.name}"})
+            continue
+
+        if event.type == "raw_response_event" and isinstance(event.data, ResponseTextDeltaEvent):
+            delta = event.data.delta
+            if delta:
+                full += delta
+                await ws.send_json({"type": "assistant_delta", "delta": delta})
 
     await ws.send_json({"type": "assistant_message", "text": full})
+
 
 @app.get("/")
 def root():
     return {"ok": True, "message": "Backend is running"}
 
 
-@app.post("/api/upload")
-async def upload(
-    file: UploadFile = File(...),
-    authorization: str | None = Header(default=None),
-):
-    if not authorization or not authorization.lower().startswith("bearer "):
-        raise HTTPException(status_code=401, detail="Missing bearer token")
-    token = authorization.split(" ", 1)[1].strip()
-    user_email = verify_access_token(token)
 
+def create_word_doc(pdf_path: Path) -> Path:
+    if pdf_path.suffix.lower() != ".pdf":
+        raise ValueError("Expected a PDF file")
+
+    out_dir = pdf_path.parent / "generated"
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    out_path = out_dir / f"{pdf_path.stem}.docx"
+
+    reader = PdfReader(str(pdf_path))
+
+    doc = Document()
+    doc.add_heading(f"Extracted text from {pdf_path.name}", level=1)
+
+    any_text = False
+
+    for i, page in enumerate(reader.pages, start=1):
+        text = page.extract_text() or ""
+        text = text.strip()
+
+        doc.add_heading(f"Page {i}", level=2)
+
+        if text:
+            any_text = True
+            for line in text.splitlines():
+                line = line.strip()
+                if line:
+                    doc.add_paragraph(line)
+        else:
+            doc.add_paragraph("(No extractable text found on this page)")
+
+    if not any_text:
+        doc.add_paragraph("")
+        doc.add_paragraph("Note: This PDF may be scanned images. Text extraction will be limited without OCR.")
+
+    doc.save(str(out_path))
+    return out_path
+
+
+@app.post("/api/upload")
+async def upload(file: UploadFile = File(...)) -> dict[str, Any]:
     file_id = str(uuid.uuid4())
-    safe_name = (file.filename or "upload.bin").replace("/", "_")
+    safe_name = (file.filename or "upload.pdf").replace("/", "_")
     dest = UPLOAD_DIR / f"{file_id}__{safe_name}"
 
     contents = await file.read()
     dest.write_bytes(contents)
 
-    preview = ""
     try:
-        preview = contents[:5000].decode("utf-8", errors="ignore")
-    except Exception:
-        preview = ""
+        generated_path = create_word_doc(dest)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to create Word doc: {e}")
 
     return {
         "file_id": file_id,
         "filename": safe_name,
         "bytes": len(contents),
-        "text_preview": preview,
+        "generated_doc": {
+            "filename": generated_path.name,
+            "bytes": generated_path.stat().st_size,
+        },
+        "download_url": f"/api/generated/{generated_path.name}",
     }
+
+
+
+@app.get("/api/generated/{name}")
+def get_generated(name: str, authorization: str | None = Header(default=None)):
+    if not authorization or not authorization.lower().startswith("bearer "):
+        raise HTTPException(status_code=401, detail="Missing bearer token")
+    token = authorization.split(" ", 1)[1].strip()
+    verify_access_token(token)
+
+    path = (UPLOAD_DIR / "generated" / name).resolve()
+    gen_dir = (UPLOAD_DIR / "generated").resolve()
+
+    if gen_dir not in path.parents or not path.exists():
+        raise HTTPException(status_code=404, detail="Not found")
+
+    return FileResponse(str(path), filename=path.name)
+
+
 
 @app.websocket("/ws/chat")
 async def chat(ws: WebSocket):
-    token = ws.query_params.get("token")
-    if not token:
-        await ws.close(code=1008)
-        return
-
-    try:
-        user_email = verify_access_token(token)
-    except HTTPException:
-        await ws.close(code=1008)
-        return
-
-
+    # your token checks...
     await ws.accept()
-    session_state: dict[str, Any] = {"file_preview": None, "user": user_email}
 
+    session_state: dict[str, Any] = {
+        "file_preview": None,
+        "agent": START_AGENT,   # start here
+        "session": OpenAIConversationsSession(),   # memory lives here
+    }
 
     try:
         while True:
             msg = await ws.receive_json()
+            # handle set_file etc...
 
-            kind = msg.get("type")
-            if kind == "set_file":
-                session_state["file_preview"] = msg.get("text_preview") or ""
-                await ws.send_json({"type": "status", "message": "File attached to chat context."})
-                continue
+            if msg.get("type") == "user_message":
+                user_text = (msg.get("text") or "").strip()
+                if not user_text:
+                    await ws.send_json({"type": "error", "message": "Empty message."})
+                    continue
 
-            if kind != "user_message":
-                await ws.send_json({"type": "error", "message": "Unknown message type."})
-                continue
-
-            user_text = (msg.get("text") or "").strip()
-            if not user_text:
-                await ws.send_json({"type": "error", "message": "Empty message."})
-                continue
-
-            agent = route_agent(user_text)
-            await ws.send_json({"type": "status", "message": f"Agent: {agent}"})
-
-            await call_model_streaming(
-                ws,
-                agent,
-                user_text,
-                session_state.get("file_preview"),
-            )
-
-
+                await call_model_streaming_agents_sdk(
+                    ws=ws,
+                    agent=session_state["agent"],
+                    user_text=user_text,
+                    file_context=session_state.get("file_preview"),
+                    session=session_state["session"],
+                    session_state=session_state,
+                )
     except WebSocketDisconnect:
         return
+
     
 
 class GoogleAuthBody(BaseModel):
